@@ -58,14 +58,14 @@ Use a **Fine-grained Personal Access Token** on GitHub.
 ### Steps
 
 1. Go to:
-    * GitHub → Settings → Developer Settings → Personal Access Tokens -> Fine-grained tokens
+    * GitHub → Settings → Developer Settings → Personal Access Tokens → Fine-grained tokens
 
 2. Click **Generate new token**
 
 3. Configure:
-    * **Repository access** -> **All repositories**
-    * **Permissions** ->
-        * Set the following: **Administration** -> **Read and write**
+    * **Repository access** → **All repositories**
+    * **Permissions** →
+        * Set the following: **Administration** → **Read and write**
    > This permission is required to manage repository collaborators (invite/remove users)
 
 ---

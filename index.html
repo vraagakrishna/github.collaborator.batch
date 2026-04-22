@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub Collaborator Batch Tool</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .log-entry {
+            font-family: monospace;
+            border-bottom: 1px solid white;
+            padding: 4px 0;
+        }
+
+        .success {
+            color: green;
+        }
+
+        .error {
+            color: red;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen p-4 md:p-10">
+
+<div class="mx-auto bg-white rounded-xl overflow-hidden p-8 shadow-lg">
+    <h1 class="text-2xl font-bold text-gray-800 mb-6">
+        🚀 GitHub Collaborator Batch Tool
+    </h1>
+
+    <div class="space-y-4">
+        <div class="space-y-1">
+            <label class="text-sm font-medium text-gray-700">GitHub Personal Access Token</label>
+            <input type="password" id="ghToken" placeholder="github_pat_xxxxxxxxxxxx"
+                   class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
+        </div>
+
+        <div class="space-y-1">
+            <label class="text-sm font-medium text-gray-700">Repository URL</label>
+            <input type="text" id="repoUrl" placeholder="https://github.com/owner/repo-name"
+                   class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500">
+        </div>
+
+        <div class="space-y-1">
+            <label class="text-sm font-medium text-gray-700">Collaborators (Usernames or Profile URLs)</label>
+            <textarea id="userList" rows="6" placeholder="octocat&#10;https://github.com/user2"
+                      class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"></textarea>
+            <div class="flex items-center gap-4">
+                <span class="text-xs text-gray-500 text-nowrap">Or upload .txt file:</span>
+                <input type="file" id="fileInput" accept=".txt"
+                       class="text-xs text-gray-500 file:mr-4 file:py-1 file:px-2 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100">
+            </div>
+        </div>
+
+        <div class="flex flex-col gap-2">
+            <button id="runBtn"
+                    class="w-full flex-1 bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700 transition font-bold">
+                Start Adding Collaborators
+            </button>
+            <button id="clearBtn" class="px-4 py-2 border border-gray-300 text-gray-600 rounded-md hover:bg-gray-100 transition">
+                Clear
+            </button>
+        </div>
+    </div>
+
+    <div id="statusSection" class="mt-8 hidden">
+        <h2 class="text-lg font-semibold text-gray-800 mb-2">Process Logs</h2>
+        <div id="logOutput" class="bg-gray-900 text-gray-100 p-4 rounded-lg h-94 overflow-y-auto text-sm">
+        </div>
+    </div>
+</div>
+
+<script>
+    const logOutput = document.getElementById('logOutput');
+    const runBtn = document.getElementById('runBtn');
+    const clearBtn = document.getElementById('clearBtn');
+
+    // Helper to append logs
+    function log(message, type = 'info') {
+        const div = document.createElement('div');
+        div.className = `log-entry ${type}`;
+        const icon = type === 'success' ? '✅' : (type === 'error' ? '❌' : 'ℹ️');
+        div.innerText = `${icon} ${message}`;
+        logOutput.appendChild(div);
+        logOutput.scrollTop = logOutput.scrollHeight;
+    }
+
+    async function extractErrorMsg(response) {
+        let data;
+        try {
+            data = await response.json();
+        } catch (e) {
+            return await response.text() || 'Unknown error';
+        }
+
+        // Check for the "errors" list (often used for validation issues)
+        if (Array.isArray(data.errors) && data.errors.length > 0) {
+            const first = data.errors[0];
+            if (typeof first === 'object' && first !== null) {
+                return first.message || JSON.stringify(first);
+            }
+        }
+
+        // Most common case: { "message": "..." }
+        if (data.message) {
+            return data.message;
+        }
+
+        return 'Unknown error';
+    }
+
+    // Handle File Upload
+    document.getElementById('fileInput').addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (e) => document.getElementById('userList').value = e.target.result;
+        reader.readAsText(file);
+    });
+
+    // Extract Username from URL or String
+    function extractUsername(entry) {
+        entry = entry.trim();
+        if (!entry) return null;
+        if (!entry.includes('github.com')) return entry;
+
+        try {
+            const url = new URL(entry);
+            const parts = url.pathname.split('/').filter(p => p);
+            return parts[0] || null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    clearBtn.addEventListener('click', () => {
+        // 1. Clear text inputs
+        document.getElementById('ghToken').value = '';
+        document.getElementById('repoUrl').value = '';
+        document.getElementById('userList').value = '';
+
+        // 2. Clear the file input
+        document.getElementById('fileInput').value = '';
+
+        // 3. Clear logs and hide the section
+        logOutput.innerHTML = '';
+        document.getElementById('statusSection').classList.add('hidden');
+
+        // 4. Reset the main button (just in case it was disabled)
+        runBtn.disabled = false;
+        runBtn.innerText = "Start Adding Collaborators";
+    });
+
+    // Main logic
+    runBtn.addEventListener('click', async () => {
+        const token = document.getElementById('ghToken').value;
+        const repoUrlInput = document.getElementById('repoUrl').value;
+        const userListRaw = document.getElementById('userList').value;
+
+        if (!token || !repoUrlInput || !userListRaw) {
+            alert("Please fill in all fields.");
+            return;
+        }
+
+        // Reset and Show Logs
+        logOutput.innerHTML = '';
+        document.getElementById('statusSection').classList.remove('hidden');
+
+        let owner, repo;
+
+        try {
+            // Ensure URL has a protocol for the constructor
+            const formattedUrl = repoUrlInput.startsWith('http') ? repoUrlInput : `https://${repoUrlInput}`;
+            const urlObj = new URL(formattedUrl);
+
+            if(!urlObj.hostname.includes('github.com')) {
+                throw new Error("Not a valid GitHub domain.");
+            }
+
+            const repoPath = urlObj.pathname.split('/').filter(p => p);
+            if (repoPath.length < 2) {
+                throw new Error("URL must include both owner and repository name (e.g. github.com/owner/repo)");
+            }
+
+            owner = repoPath[0];
+            repo = repoPath[1];
+        } catch (err) {
+            log(`Invalid Repository URL: ${err.message}`, 'error');
+            return;  // Stop execution here so it does not crash the browser
+        }
+
+        // Proceed with adding collaborators
+        runBtn.disabled = true;
+        runBtn.innerText = "Processing...";
+
+        log(`Starting batch process for ${owner}/${repo}`);
+
+        const lines = userListRaw.split('\n');
+        const seen = new Set();
+        const usernames = [];
+
+        // Clean list
+        lines.forEach(line => {
+            const user = extractUsername(line);
+            if (user && !seen.has(user)) {
+                seen.add(user);
+                usernames.push(user);
+            }
+        });
+
+        log(`Found ${usernames.length} unique users.`);
+
+        // Add Collaborators
+        for (const user of usernames) {
+            try {
+                const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/collaborators/${user}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': `token ${token}`,
+                        'Accept': 'application/vnd.github+json'
+                    },
+                    body: JSON.stringify({ permission: 'push' })
+                });
+
+                if (response.status === 201 || response.status === 204) {
+                    log(`Added: ${user}`, 'success');
+                } else {
+                    const errorMsg = await extractErrorMsg(response);
+                    log(`Failed: ${user} | ${response.status} | ${errorMsg}`, 'error');
+                }
+            } catch (err) {
+                log(`Error with ${user}: ${err.message}`, 'error');
+            }
+        }
+
+        log("Batch process complete.");
+        runBtn.disabled = false;
+        runBtn.innerText = "Start Adding Collaborators";
+    });
+
+</script>
+</body>
+</html>

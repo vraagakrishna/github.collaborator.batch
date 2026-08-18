@@ -52,6 +52,15 @@
             </div>
         </div>
 
+		<div class="flex items-center gap-2">
+			<input type="checkbox" id="deleteExpiredInvitations"
+				   class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
+
+			<label for="deleteExpiredInvitations" class="text-sm text-gray-700">
+				Delete expired invitations and send a new invitation
+			</label>
+		</div>
+
         <div class="flex flex-col gap-2">
             <button id="runBtn"
                     class="w-full flex-1 bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700 transition font-bold">
@@ -77,9 +86,15 @@
 
     // Helper to append logs
     function log(message, type = 'info') {
+		const icons = {
+			info: 'ℹ️',
+			success: '✅',
+			warning: '⚠️',
+			error: '❌'
+		};
         const div = document.createElement('div');
         div.className = `log-entry ${type}`;
-        const icon = type === 'success' ? '✅' : (type === 'error' ? '❌' : 'ℹ️');
+        const icon = icons[type] ?? icons.info;
         div.innerText = `${icon} ${message}`;
         logOutput.appendChild(div);
         logOutput.scrollTop = logOutput.scrollHeight;
@@ -108,6 +123,99 @@
 
         return 'Unknown error';
     }
+
+	async function getRepositoryInvitations(owner, repo, token) {
+		const invitations = [];
+		let page = 1;
+
+		while (true) {
+			const response = await fetch(
+				`https://api.github.com/repos/${owner}/${repo}/invitations?per_page=100&page=${page}`,
+				{
+					method: 'GET',
+					headers: {
+						'Authorization': `Bearer ${token}`,
+						'Accept': 'application/vnd.github+json'
+					}
+				}
+			);
+
+			if (!response.ok) {
+				const errorMsg = await extractErrorMsg(response);
+
+				throw new Error(
+					`Failed to get repository invitations | ${response.status} | ${errorMsg}`
+				);
+			}
+
+			const pageInvitations = await response.json();
+
+			invitations.push(...pageInvitations);
+
+			// Less than 100 means we've reached the last page
+			if (pageInvitations.length < 100) {
+				break;
+			}
+
+			page++;
+		}
+
+		return invitations;
+	}
+
+	async function deleteRepositoryInvitation(owner, repo, invitationId, token) {
+		const response = await fetch(
+			`https://api.github.com/repos/${owner}/${repo}/invitations/${invitationId}`,
+			{
+				method: 'DELETE',
+				headers: {
+					'Authorization': `Bearer ${token}`,
+					'Accept': 'application/vnd.github+json'
+				}
+			}
+		);
+
+		if (response.status === 204) {
+			return true;
+		}
+
+		const errorMsg = await extractErrorMsg(response);
+
+		throw new Error(
+			`Failed to delete invitation | ${response.status} | ${errorMsg}`
+		);
+	}
+
+	async function inviteCollaborator(owner, repo, username, token) {
+		const response = await fetch(
+			`https://api.github.com/repos/${owner}/${repo}/collaborators/${username}`,
+			{
+				method: 'PUT',
+				headers: {
+					'Authorization': `Bearer ${token}`,
+					'Accept': 'application/vnd.github+json'
+				},
+				body: JSON.stringify({
+					permission: 'push'
+				})
+			}
+		);
+
+		if (response.status === 201 || response.status === 204) {
+			return {
+				success: true,
+				status: response.status
+			};
+		}
+
+		const errorMsg = await extractErrorMsg(response);
+
+		return {
+			success: false,
+			status: response.status,
+			message: errorMsg
+		};
+	}
 
     // Handle File Upload
     document.getElementById('fileInput').addEventListener('change', function(e) {
@@ -210,23 +318,77 @@
 
         log(`Found ${usernames.length} unique users.`);
 
+		const deleteExpiredInvitations = document.getElementById('deleteExpiredInvitations').checked;
+
+		let invitations = [];
+
+		if (deleteExpiredInvitations) {
+			try {
+				log("Checking for existing repository invitations...");
+
+				invitations = await getRepositoryInvitations(
+					owner,
+					repo,
+					token
+				);
+
+				log(`Found ${invitations.length} open invitation(s).`);
+			} catch (err) {
+				log(`Failed to retrieve invitations: ${err.message}`, 'error');
+
+				runBtn.disabled = false;
+				runBtn.innerText = "Start Adding Collaborators";
+
+				return;
+			}
+		} else {
+			log('Skipping the logic to Delete Expired Invitations...');
+		}
+
         // Add Collaborators
         for (const user of usernames) {
             try {
-                const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/collaborators/${user}`, {
-                    method: 'PUT',
-                    headers: {
-                        'Authorization': `token ${token}`,
-                        'Accept': 'application/vnd.github+json'
-                    },
-                    body: JSON.stringify({ permission: 'push' })
-                });
+				if (deleteExpiredInvitations) {
+					// Check for an existing invitation
+					const invitation = invitations.find(invite =>
+						invite.invitee?.login?.toLowerCase() === user.toLowerCase()
+					);
 
-                if (response.status === 201 || response.status === 204) {
+					if (invitation) {
+						if (invitation.expired) {
+							log(`Expired invitation found: ${user}`, 'warning');
+
+							await deleteRepositoryInvitation(
+								owner,
+								repo,
+								invitation.id,
+								token
+							);
+
+							log(`Deleted expired invitation: ${user}`, 'success');
+
+							// Remove it from our local list
+							invitations = invitations.filter(
+								invite => invite.id !== invitation.id
+							);
+						} else if (!invitation.expired) {
+							log(`Invitation already pending: ${user}`, 'warning');
+							continue;
+						}
+					}
+				}
+
+				const result = await inviteCollaborator(
+					owner,
+					repo,
+					user,
+					token
+				);
+
+                if (result.success) {
                     log(`Added: ${user}`, 'success');
                 } else {
-                    const errorMsg = await extractErrorMsg(response);
-                    log(`Failed: ${user} | ${response.status} | ${errorMsg}`, 'error');
+                    log(`Failed: ${user} | ${result.status} | ${result.message}`, 'error');
                 }
             } catch (err) {
                 log(`Error with ${user}: ${err.message}`, 'error');
